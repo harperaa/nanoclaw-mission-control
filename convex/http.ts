@@ -7,13 +7,13 @@ const http = httpRouter();
 
 auth.addHttpRoutes(http);
 
-// OpenClaw webhook endpoint
+// NanoClaw webhook endpoint
 http.route({
-	path: "/openclaw/event",
+	path: "/nanoclaw/event",
 	method: "POST",
 	handler: httpAction(async (ctx, request) => {
 		const body = await request.json();
-		await ctx.runMutation(api.openclaw.receiveAgentEvent, body);
+		await ctx.runMutation(api.nanoclaw.receiveAgentEvent, body);
 		return new Response(JSON.stringify({ ok: true }), {
 			status: 200,
 			headers: { "Content-Type": "application/json" },

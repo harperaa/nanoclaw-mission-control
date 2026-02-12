@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { mutation } from "./_generated/server";
 
-const SYSTEM_AGENT_NAME = "OpenClaw";
+const SYSTEM_AGENT_NAME = "NanoClaw";
 // Tools that reliably indicate coding work (write excluded — it's used for markdown/docs too)
 const CODING_TOOLS = ["edit", "bash", "run", "process"];
 
@@ -47,7 +47,7 @@ export const receiveAgentEvent = mutation({
 		// Find existing task by runId
 		let task = await ctx.db
 			.query("tasks")
-			.filter((q) => q.eq(q.field("openclawRunId"), args.runId))
+			.filter((q) => q.eq(q.field("runId"), args.runId))
 			.first();
 
 		// Fallback: find by sessionKey (e.g. "agent:main:mission:<taskId>")
@@ -60,7 +60,7 @@ export const receiveAgentEvent = mutation({
 					if (candidate) {
 						task = candidate;
 						// Link the runId for future lookups
-						await ctx.db.patch(task._id, { openclawRunId: args.runId });
+						await ctx.db.patch(task._id, { runId: args.runId });
 					}
 				}
 			}
@@ -99,16 +99,16 @@ export const receiveAgentEvent = mutation({
 					? summarizePrompt(args.prompt)
 					: `Agent task ${args.runId.slice(0, 8)}`;
 
-				const description = args.prompt || `OpenClaw agent task\nRun ID: ${args.runId}`;
+				const description = args.prompt || `NanoClaw agent task\nRun ID: ${args.runId}`;
 
 				const taskId = await ctx.db.insert("tasks", {
 					title,
 					description,
 					status: "in_progress",
 					assigneeIds: agent ? [agent._id] : [],
-					tags: ["openclaw"],
+					tags: ["nanoclaw"],
 					sessionKey: args.sessionKey ?? undefined,
-					openclawRunId: args.runId,
+					runId: args.runId,
 					startedAt: now,
 				});
 

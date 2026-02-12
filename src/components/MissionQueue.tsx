@@ -173,7 +173,7 @@ const MissionQueue: React.FC<MissionQueueProps> = ({ selectedTaskId, onSelectTas
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"Authorization": `Bearer ${import.meta.env.VITE_OPENCLAW_HOOK_TOKEN || ""}`,
+					"Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
 				},
 				body: JSON.stringify({
 					message,
@@ -186,11 +186,11 @@ const MissionQueue: React.FC<MissionQueueProps> = ({ selectedTaskId, onSelectTas
 			if (res.ok) {
 				const data = await res.json();
 				if (data.runId) {
-					await linkRun({ taskId, openclawRunId: data.runId });
+					await linkRun({ taskId, runId: data.runId });
 				}
 			}
 		} catch (err) {
-			console.error("[MissionQueue] Failed to trigger openclaw agent:", err);
+			console.error("[MissionQueue] Failed to trigger nanoclaw agent:", err);
 		}
 	};
 

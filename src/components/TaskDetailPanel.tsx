@@ -194,7 +194,7 @@ const TaskDetailPanel: React.FC<TaskDetailPanelProps> = ({ taskId, onClose, onPr
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${import.meta.env.VITE_OPENCLAW_HOOK_TOKEN || ""}`,
+          "Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
         },
         body: JSON.stringify({
           message: prompt,
@@ -207,11 +207,11 @@ const TaskDetailPanel: React.FC<TaskDetailPanelProps> = ({ taskId, onClose, onPr
       if (res.ok) {
         const data = await res.json();
         if (data.runId) {
-          await linkRun({ taskId: task._id, openclawRunId: data.runId });
+          await linkRun({ taskId: task._id, runId: data.runId });
         }
       }
     } catch (err) {
-      console.error("[TaskDetailPanel] Failed to trigger openclaw agent:", err);
+      console.error("[TaskDetailPanel] Failed to trigger nanoclaw agent:", err);
     }
   };
 

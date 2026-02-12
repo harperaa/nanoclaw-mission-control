@@ -94,11 +94,11 @@ export const archiveTask = mutation({
 export const linkRun = mutation({
   args: {
     taskId: v.id("tasks"),
-    openclawRunId: v.string(),
+    runId: v.string(),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.taskId, {
-      openclawRunId: args.openclawRunId,
+      runId: args.runId,
       startedAt: Date.now(),
     });
   },

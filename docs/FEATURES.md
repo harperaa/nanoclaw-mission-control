@@ -1,7 +1,7 @@
 # Mission Control Dashboard Features
 
 ## Overview
-Mission Control is the central operating dashboard for the OpenClaw multi-agent system. It provides a real-time interface for managing tasks, monitoring agent status, and tracking system activities.
+Mission Control is the central operating dashboard for the NanoClaw multi-agent system. It provides a real-time interface for managing tasks, monitoring agent status, and tracking system activities.
 
 ## 1. Core Navigation & Layout
 - **Dual Sidebar Layout**:

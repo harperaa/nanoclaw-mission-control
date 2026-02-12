@@ -55,7 +55,7 @@ export default function App() {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"Authorization": `Bearer ${import.meta.env.VITE_OPENCLAW_HOOK_TOKEN || ""}`,
+					"Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
 				},
 				body: JSON.stringify({
 					message,
@@ -68,11 +68,11 @@ export default function App() {
 			if (res.ok) {
 				const data = await res.json();
 				if (data.runId) {
-					await linkRun({ taskId, openclawRunId: data.runId });
+					await linkRun({ taskId, runId: data.runId });
 				}
 			}
 		} catch (err) {
-			console.error("[App] Failed to trigger openclaw agent:", err);
+			console.error("[App] Failed to trigger nanoclaw agent:", err);
 		}
 	}, [linkRun]);
 
