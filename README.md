@@ -59,7 +59,7 @@ npx convex run seed:run
 
 ## NanoClaw Integration
 
-Mission Control integrates with [NanoClaw](https://github.com/anthropics/nanoclaw) to automatically track agent tasks in real-time.
+Mission Control integrates with [NanoClaw](https://github.com/harperaa/nanoclaw-hard-shell) to automatically track agent tasks in real-time.
 
 ### How It Works
 
