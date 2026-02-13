@@ -76,8 +76,12 @@ const DocumentPreviewTray: React.FC<DocumentPreviewTrayProps> = ({
       );
     }
 
-    // Markdown or Notes
-    if (type === "markdown" || type === "note") {
+    // Markdown or Notes (also treat "text" as markdown if path ends in .md)
+    const isMarkdown =
+      type === "markdown" ||
+      type === "note" ||
+      (type === "text" && documentContext.path?.endsWith(".md"));
+    if (isMarkdown) {
       return (
         <div className="p-4 prose prose-sm max-w-none markdown-content">
           <Markdown>{content}</Markdown>

@@ -1,9 +1,8 @@
 "use client";
 
-import { Authenticated, Unauthenticated, useMutation } from "convex/react";
+import { Authenticated, Unauthenticated } from "convex/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Id } from "../convex/_generated/dataModel";
-import { api } from "../convex/_generated/api";
 import Header from "./components/Header";
 import AgentsSidebar from "./components/AgentsSidebar";
 import MissionQueue from "./components/MissionQueue";
@@ -47,34 +46,25 @@ export default function App() {
 	const [selectedAgentId, setSelectedAgentId] = useState<Id<"agents"> | null>(null);
 	const [showAddAgentModal, setShowAddAgentModal] = useState(false);
 
-	const linkRun = useMutation(api.tasks.linkRun);
-
 	const triggerAgent = useCallback(async (taskId: Id<"tasks">, message: string) => {
 		try {
 			const res = await fetch("/hooks/agent", {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					message,
 					sessionKey: `mission:${taskId}`,
-					name: "MissionControl",
-					wakeMode: "now",
 				}),
 			});
 
-			if (res.ok) {
-				const data = await res.json();
-				if (data.runId) {
-					await linkRun({ taskId, runId: data.runId });
-				}
+			if (!res.ok) {
+				const data = await res.json().catch(() => ({}));
+				console.error("[App] NanoClaw IPC error:", data.error ?? res.status);
 			}
 		} catch (err) {
 			console.error("[App] Failed to trigger nanoclaw agent:", err);
 		}
-	}, [linkRun]);
+	}, []);
 
 	// Document tray state
 	const [selectedDocumentId, setSelectedDocumentId] = useState<Id<"documents"> | null>(null);

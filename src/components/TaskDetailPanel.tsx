@@ -42,10 +42,9 @@ const TaskDetailPanel: React.FC<TaskDetailPanelProps> = ({ taskId, onClose, onPr
   const archiveTask = useMutation(api.tasks.archiveTask);
   const sendMessage = useMutation(api.messages.send);
   const createDocument = useMutation(api.documents.create);
-  const linkRun = useMutation(api.tasks.linkRun);
 
   const task = tasks?.find((t) => t._id === taskId);
-  const currentUserAgent = agents?.find(a => a.name === "Manish");
+  const currentUserAgent = agents?.find(a => a.name === "Allen");
   
   const [description, setDescription] = useState("");
   const [isEditingDesc, setIsEditingDesc] = useState(false);
@@ -188,27 +187,20 @@ const TaskDetailPanel: React.FC<TaskDetailPanelProps> = ({ taskId, onClose, onPr
       prompt += `\n\n---\nConversation:\n${thread}\n---\nContinue working on this task based on the conversation above.`;
     }
 
-    // Trigger the agent
+    // Trigger the agent via NanoClaw IPC
     try {
       const res = await fetch("/hooks/agent", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: prompt,
           sessionKey: `mission:${task._id}`,
-          name: "MissionControl",
-          wakeMode: "now",
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.runId) {
-          await linkRun({ taskId: task._id, runId: data.runId });
-        }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("[TaskDetailPanel] NanoClaw IPC error:", data.error ?? res.status);
       }
     } catch (err) {
       console.error("[TaskDetailPanel] Failed to trigger nanoclaw agent:", err);

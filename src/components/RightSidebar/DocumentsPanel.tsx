@@ -41,6 +41,7 @@ const DocumentsPanel: React.FC<DocumentsPanelProps> = ({
   const [selectedAgentId, setSelectedAgentId] = useState<
     Id<"agents"> | undefined
   >(undefined);
+  const [searchQuery, setSearchQuery] = useState("");
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -48,11 +49,23 @@ const DocumentsPanel: React.FC<DocumentsPanelProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  const documents = useQuery(api.documents.listAll, {
+  const allDocuments = useQuery(api.documents.listAll, {
     type: selectedType === "all" ? undefined : selectedType,
     agentId: selectedAgentId,
   });
   const agents = useQuery(api.queries.listAgents);
+
+  const documents = React.useMemo(() => {
+    if (!allDocuments) return undefined;
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return allDocuments;
+    return allDocuments.filter(
+      (doc) =>
+        doc.title.toLowerCase().includes(q) ||
+        doc.content.toLowerCase().includes(q) ||
+        (doc.path && doc.path.toLowerCase().includes(q)),
+    );
+  }, [allDocuments, searchQuery]);
 
   const handleDocumentClick = (docId: Id<"documents">) => {
     if (selectedDocumentId === docId) {
@@ -89,6 +102,19 @@ const DocumentsPanel: React.FC<DocumentsPanelProps> = ({
       default:
         return "D";
     }
+  };
+
+  const getMatchSnippet = (content: string, query: string): string | null => {
+    if (!query) return null;
+    const lower = content.toLowerCase();
+    const idx = lower.indexOf(query.toLowerCase());
+    if (idx === -1) return null;
+    const start = Math.max(0, idx - 30);
+    const end = Math.min(content.length, idx + query.length + 50);
+    let snippet = content.slice(start, end).replace(/\n/g, " ");
+    if (start > 0) snippet = "..." + snippet;
+    if (end < content.length) snippet = snippet + "...";
+    return snippet;
   };
 
   const getTypeColor = (type: string) => {
@@ -150,6 +176,36 @@ const DocumentsPanel: React.FC<DocumentsPanelProps> = ({
             </div>
           ))}
         </div>
+
+        <div className="relative">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search documents..."
+            className="w-full text-xs bg-secondary border border-border rounded-md pl-7 pr-7 py-1.5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[var(--accent-orange)] focus:border-[var(--accent-orange)]"
+          />
+          <svg
+            className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <circle cx="11" cy="11" r="8" strokeWidth="2" />
+            <path d="m21 21-4.3-4.3" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M18 6 6 18M6 6l12 12" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -185,6 +241,14 @@ const DocumentsPanel: React.FC<DocumentsPanelProps> = ({
                   )}
                   <span>{doc.type}</span>
                 </div>
+                {searchQuery.trim() && (() => {
+                  const snippet = getMatchSnippet(doc.content, searchQuery.trim());
+                  return snippet ? (
+                    <div className="text-[10px] text-muted-foreground mt-1 line-clamp-2 italic">
+                      {snippet}
+                    </div>
+                  ) : null;
+                })()}
                 <div className="text-[10px] text-muted-foreground mt-1">
                   {formatRelativeTime(doc._creationTime, now)}
                 </div>

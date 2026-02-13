@@ -67,12 +67,11 @@ const MissionQueue: React.FC<MissionQueueProps> = ({ selectedTaskId, onSelectTas
 	const agents = useQuery(api.queries.listAgents);
 	const archiveTask = useMutation(api.tasks.archiveTask);
 	const updateStatus = useMutation(api.tasks.updateStatus);
-	const linkRun = useMutation(api.tasks.linkRun);
 	const [showArchived, setShowArchived] = useState(false);
 	const convex = useConvex();
 	const [activeTask, setActiveTask] = useState<Task | null>(null);
 
-	const currentUserAgent = agents?.find(a => a.name === "Manish");
+	const currentUserAgent = agents?.find(a => a.name === "Allen");
 
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
@@ -171,23 +170,16 @@ const MissionQueue: React.FC<MissionQueueProps> = ({ selectedTaskId, onSelectTas
 		try {
 			const res = await fetch("/hooks/agent", {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"Authorization": `Bearer ${import.meta.env.VITE_NANOCLAW_HOOK_TOKEN || ""}`,
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					message,
 					sessionKey: `mission:${taskId}`,
-					name: "MissionControl",
-					wakeMode: "now",
 				}),
 			});
 
-			if (res.ok) {
-				const data = await res.json();
-				if (data.runId) {
-					await linkRun({ taskId, runId: data.runId });
-				}
+			if (!res.ok) {
+				const data = await res.json().catch(() => ({}));
+				console.error("[MissionQueue] NanoClaw IPC error:", data.error ?? res.status);
 			}
 		} catch (err) {
 			console.error("[MissionQueue] Failed to trigger nanoclaw agent:", err);

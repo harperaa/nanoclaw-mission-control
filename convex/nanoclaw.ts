@@ -94,12 +94,14 @@ export const receiveAgentEvent = mutation({
 		const now = Date.now();
 
 		if (args.action === "start") {
-			if (!task) {
-				const title = args.prompt
-					? summarizePrompt(args.prompt)
-					: `Agent task ${args.runId.slice(0, 8)}`;
+			if (!task && !args.prompt) {
+				// Internal container spawn with no prompt — skip board task creation
+				return;
+			}
 
-				const description = args.prompt || `NanoClaw agent task\nRun ID: ${args.runId}`;
+			if (!task) {
+				const title = summarizePrompt(args.prompt!);
+				const description = args.prompt!;
 
 				const taskId = await ctx.db.insert("tasks", {
 					title,
@@ -156,11 +158,11 @@ export const receiveAgentEvent = mutation({
 			}
 		} else if (args.action === "end" && task) {
 			// Move to review if:
-			// - The agent asks a question (needs user feedback), or
+			// - The agent's response ends with a question (needs user feedback), or
 			// - Coding tools (edit, exec, bash) were used, or
 			// - Code-type documents were created for this task
 			// Otherwise, mark as done.
-			const needsFeedback = args.response ? args.response.includes("?") : false;
+			const needsFeedback = responseEndsWithQuestion(args.response, task.description);
 
 			let isCodingTask = task.usedCodingTools ?? false;
 			if (!isCodingTask) {
@@ -185,12 +187,8 @@ export const receiveAgentEvent = mutation({
 			const durationStr = formatDuration(duration);
 
 			if (agent) {
-				// Include the response and duration in the completion message
 				const icon = needsFeedback ? "❓" : "✅";
-				let completionMsg = `${icon} **${needsFeedback ? "Needs Input" : "Completed"}** in **${durationStr}**`;
-				if (args.response) {
-					completionMsg += `\n\n${args.response}`;
-				}
+				const completionMsg = `${icon} **${needsFeedback ? "Needs Input" : "Completed"}** in **${durationStr}**`;
 
 				await ctx.db.insert("messages", {
 					taskId: task._id,
@@ -230,41 +228,89 @@ export const receiveAgentEvent = mutation({
 				});
 			}
 		} else if (args.action === "document" && args.document && agent) {
-			// Create document linked to the task
-			const docId = await ctx.db.insert("documents", {
-				title: args.document.title,
-				content: args.document.content,
-				type: args.document.type,
-				path: args.document.path,
-				taskId: task?._id,
-				createdByAgentId: agent._id,
-			});
+			// Dedup by path — update existing document instead of creating duplicate
+			let existingDoc = args.document.path
+				? await ctx.db
+						.query("documents")
+						.filter((q) => q.eq(q.field("path"), args.document!.path))
+						.first()
+				: null;
 
-			// Add activity for document creation
-			let activityMsg = `created document "${args.document.title}"`;
-			if (task) {
-				activityMsg += ` for "${task.title}"`;
-			}
-
-			await ctx.db.insert("activities", {
-				type: "document_created",
-				agentId: agent._id,
-				message: activityMsg,
-				targetId: task?._id,
-			});
-
-			// If there's an associated task, add a comment about the document
-			if (task) {
-				await ctx.db.insert("messages", {
-					taskId: task._id,
-					fromAgentId: agent._id,
-					content: `📄 Created document: **${args.document.title}**\n\nType: ${args.document.type}${args.document.path ? `\nPath: \`${args.document.path}\`` : ""}`,
-					attachments: [docId],
+			if (existingDoc) {
+				// Update content and task link
+				await ctx.db.patch(existingDoc._id, {
+					content: args.document.content,
+					title: args.document.title,
+					type: args.document.type,
+					taskId: task?._id ?? existingDoc.taskId,
+					createdByAgentId: agent._id,
 				});
+			} else {
+				// Create document linked to the task
+				const docId = await ctx.db.insert("documents", {
+					title: args.document.title,
+					content: args.document.content,
+					type: args.document.type,
+					path: args.document.path,
+					taskId: task?._id,
+					createdByAgentId: agent._id,
+				});
+
+				// Add activity for document creation
+				let activityMsg = `created document "${args.document.title}"`;
+				if (task) {
+					activityMsg += ` for "${task.title}"`;
+				}
+
+				await ctx.db.insert("activities", {
+					type: "document_created",
+					agentId: agent._id,
+					message: activityMsg,
+					targetId: task?._id,
+				});
+
+				// If there's an associated task, add a comment about the document
+				if (task) {
+					await ctx.db.insert("messages", {
+						taskId: task._id,
+						fromAgentId: agent._id,
+						content: `📄 Created document: **${args.document.title}**\n\nType: ${args.document.type}${args.document.path ? `\nPath: \`${args.document.path}\`` : ""}`,
+						attachments: [docId],
+					});
+				}
 			}
 		}
 	},
 });
+
+/**
+ * Detect whether the agent is asking the user a question.
+ * Only checks the last non-empty line of the response — avoids false positives
+ * from the prompt being echoed in the response (e.g. "what is weather in daytona fl?")
+ * or question marks in URLs, citations, etc.
+ */
+function responseEndsWithQuestion(
+	response: string | null | undefined,
+	prompt: string | undefined,
+): boolean {
+	if (!response) return false;
+
+	// Strip the original prompt/description if it appears at the start of the response
+	let text = response.trim();
+	if (prompt) {
+		const trimmedPrompt = prompt.trim();
+		if (text.startsWith(trimmedPrompt)) {
+			text = text.slice(trimmedPrompt.length).trim();
+		}
+	}
+
+	if (!text) return false;
+
+	// Check the last non-empty line
+	const lines = text.split("\n").filter((l) => l.trim().length > 0);
+	const lastLine = lines[lines.length - 1]?.trim() ?? "";
+	return lastLine.endsWith("?");
+}
 
 function summarizePrompt(prompt: string): string {
 	const cleaned = prompt.trim();
