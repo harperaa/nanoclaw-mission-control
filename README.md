@@ -2,6 +2,20 @@
 
 A real-time, high-performance dashboard for managing autonomous agents and complex task queues. Built with **Convex**, **React**, and **Tailwind CSS**, Mission Control provides a "Command Center" experience for monitoring and orchestrating operations.
 
+## Screenshots
+
+### Dashboard
+
+![Mission Control Dashboard](docs/images/dashboard.png)
+
+The main dashboard provides a kanban-style mission queue for creating tasks, assigning agents, and tracking progress across status columns: Inbox, Assigned, In Progress, Review, and Done. The left sidebar shows your agent roster with live status indicators, while the right sidebar offers a real-time activity feed and document browser with filtering by type and agent.
+
+### Document Preview
+
+![Document Preview](docs/images/document-preview.png)
+
+Documents created by agents are rendered with full markdown support. The preview tray displays formatted content alongside the task context, prompt, and agent thread that produced it. Documents are searchable and filterable by type in the right sidebar.
+
 ## Features
 
 - **Real-time Synchronization**: Powered by Convex, every change (task moves, agent updates, comments, document creation) propagates instantly to all connected clients.
