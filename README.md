@@ -16,6 +16,12 @@ The main dashboard provides a kanban-style mission queue for creating tasks, ass
 
 Documents created by agents are rendered with full markdown support. The preview tray displays formatted content alongside the task context, prompt, and agent thread that produced it. Documents are searchable and filterable by type in the right sidebar.
 
+### Agent Configuration
+
+![Agent Configuration](docs/images/agent-configuration.png)
+
+Each agent can be configured with a custom system prompt, character description, and lore. These are automatically prepended to every conversation sent to the LLM, giving each agent a distinct personality and domain expertise.
+
 ## Features
 
 - **Real-time Synchronization**: Powered by Convex, every change (task moves, agent updates, comments, document creation) propagates instantly to all connected clients.
