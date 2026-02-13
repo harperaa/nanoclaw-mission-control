@@ -88,7 +88,21 @@ const AddTaskModal: React.FC<AddTaskModalProps> = ({ onClose, onCreated, onTrigg
 				}
 
 				if (status === "in_progress" && onTriggerAgent) {
-					const prompt = description.trim() || title.trim();
+					let prompt = "";
+
+					// Prepend agent system prompt, character, and lore
+					if (assigneeId && agents) {
+						const agent = agents.find((a) => a._id === assigneeId);
+						if (agent) {
+							const parts: string[] = [];
+							if (agent.systemPrompt) parts.push(`System Prompt:\n${agent.systemPrompt}`);
+							if (agent.character) parts.push(`Character:\n${agent.character}`);
+							if (agent.lore) parts.push(`Lore:\n${agent.lore}`);
+							if (parts.length > 0) prompt = parts.join("\n\n") + "\n\n---\n\n";
+						}
+					}
+
+					prompt += description.trim() || title.trim();
 					await onTriggerAgent(taskId, prompt);
 				}
 
