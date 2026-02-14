@@ -83,6 +83,8 @@ const mcFileSnapshots = new Map<string, Map<string, number>>();
 // from the same task (interactive handler fires after IPC handler) stealing
 // the next task's session.
 const groupEndCooldown = new Map<string, number>();
+// Groups with active MC-triggered queries awaiting "Agent query completed" signal
+const pendingQueryGroups = new Set<string>();
 
 // Queue helpers for missionSessionQueues
 function pushMcSession(group: string, sessionKey: string): void {
@@ -319,6 +321,139 @@ function detectSource(jid: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Debounced end-event finalizer
+// ---------------------------------------------------------------------------
+
+/**
+ * Called when "Agent query completed" is detected for a group. Consumes the
+ * MC session, sends the accumulated response as a comment, detects documents,
+ * and posts the END event. Handles both tracked runs (EARLY_END) and
+ * orphaned sessions (watcher restarted mid-run).
+ */
+function finalizeGroupEnd(group: string): void {
+  // Try tracked active run first
+  const containerName = lastContainerByGroup.get(group);
+  const run = containerName ? activeRuns.get(containerName) : undefined;
+
+  if (run && !run.completedEarly) {
+    const mcSession = run.sessionKey.startsWith("mission:")
+      ? run.sessionKey
+      : peekMcSession(group) ?? null;
+
+    if (mcSession) {
+      run.completedEarly = true;
+      if (!run.sessionKey.startsWith("mission:")) shiftMcSession(group);
+
+      if (!capturedResponseByGroup.has(group) && run.response) {
+        capturedResponseByGroup.set(group, run.response);
+      }
+      const capturedResponse = capturedResponseByGroup.get(group) ?? null;
+      sendResponseComment(group, run.runId, mcSession);
+
+      const snapshot = mcFileSnapshots.get(mcSession) ?? null;
+      mcFileSnapshots.delete(mcSession);
+      sendDocumentEvents(group, run.runId, mcSession, snapshot);
+      if (snapshot) {
+        const _g = group, _r = run.runId, _s = mcSession, _snap = snapshot;
+        setTimeout(() => sendDocumentEvents(_g, _r, _s, _snap), 5000);
+      }
+
+      let response = capturedResponse ?? run.response ?? null;
+      if (response && response.length > 1000) {
+        response = response.slice(0, 1000) + "...";
+      }
+
+      void postEvent({
+        runId: run.runId,
+        action: "end",
+        sessionKey: mcSession,
+        agentId: getGroupName(run.group),
+        timestamp: new Date().toISOString(),
+        response,
+        eventType: "lifecycle:end",
+      });
+
+      groupEndCooldown.set(group, Date.now() + 3000);
+      console.log(`[watcher] EARLY_END ${containerName} session=${mcSession} (query completed)`);
+      return;
+    }
+  }
+
+  // Fallback: orphaned session (watcher missed the container spawn)
+  const pendingSession = shiftMcSession(group);
+  if (pendingSession) {
+    const syntheticRunId = `orphan-${Date.now()}`;
+    const capturedResponse = capturedResponseByGroup.get(group) ?? null;
+
+    sendResponseComment(group, syntheticRunId, pendingSession);
+
+    const snapshot = mcFileSnapshots.get(pendingSession) ?? null;
+    mcFileSnapshots.delete(pendingSession);
+    sendDocumentEvents(group, syntheticRunId, pendingSession, snapshot);
+    if (snapshot) {
+      const _g = group, _r = syntheticRunId, _s = pendingSession, _snap = snapshot;
+      setTimeout(() => sendDocumentEvents(_g, _r, _s, _snap), 5000);
+    }
+
+    let response = capturedResponse;
+    if (response && response.length > 1000) response = response.slice(0, 1000) + "...";
+
+    void postEvent({
+      runId: syntheticRunId,
+      action: "end",
+      sessionKey: pendingSession,
+      agentId: getGroupName(group),
+      timestamp: new Date().toISOString(),
+      response,
+      eventType: "lifecycle:end",
+    });
+    groupEndCooldown.set(group, Date.now() + 3000);
+    console.log(`[watcher] ORPHAN_END session=${pendingSession} (query completed)`);
+    return;
+  }
+
+  // Last resort: check SQLite for active MC tasks
+  try {
+    const result = execSync(
+      `sqlite3 "${NANOCLAW_DB}" "SELECT id, prompt FROM scheduled_tasks WHERE status='active' ORDER BY created_at DESC LIMIT 1;"`,
+      { encoding: "utf-8", timeout: 2000 },
+    ).trim();
+    if (result) {
+      const [, prompt] = result.split("|");
+      const match = prompt?.match(/\[mc:session=(mission:[^\]]+)\]/);
+      if (match) {
+        const syntheticRunId = `orphan-${Date.now()}`;
+        const capturedResponse = capturedResponseByGroup.get(group) ?? null;
+
+        sendResponseComment(group, syntheticRunId, match[1]);
+        const snapshot = mcFileSnapshots.get(match[1]) ?? null;
+        mcFileSnapshots.delete(match[1]);
+        sendDocumentEvents(group, syntheticRunId, match[1], snapshot);
+        if (snapshot) {
+          const _snap = snapshot;
+          setTimeout(() => sendDocumentEvents(group, syntheticRunId, match[1], _snap), 5000);
+        }
+
+        let response = capturedResponse;
+        if (response && response.length > 1000) response = response.slice(0, 1000) + "...";
+
+        void postEvent({
+          runId: syntheticRunId,
+          action: "end",
+          sessionKey: match[1],
+          agentId: getGroupName(group),
+          timestamp: new Date().toISOString(),
+          response,
+          eventType: "lifecycle:end",
+        });
+        groupEndCooldown.set(group, Date.now() + 3000);
+        console.log(`[watcher] ORPHAN_END session=${match[1]} (query completed, from SQLite)`);
+      }
+    }
+  } catch { /* SQLite read failed, skip */ }
+}
+
+// ---------------------------------------------------------------------------
 // Log line handler
 // ---------------------------------------------------------------------------
 
@@ -402,12 +537,11 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     return;
   }
 
-  // --- IPC/Telegram message sent → early completion for MC-triggered runs ---
-  // NanoClaw emits these after agent output is delivered. The container stays
-  // alive for 30 minutes (idle timeout), so we use this as an early "end"
-  // signal to update Mission Control immediately.
+  // --- IPC/Telegram message sent → mark group as having active query ---
+  // NanoClaw emits these after agent output is delivered via send_message MCP
+  // tool. We track the group so watchIpcMessages captures the response text.
+  // The actual end signal is "Agent query completed" (below).
   if (message === "IPC message sent" || message === "Telegram message sent") {
-    // "IPC message sent" has sourceGroup; "Telegram message sent" has jid only
     let group = kv["sourceGroup"];
 
     if (!group && kv["jid"]) {
@@ -427,153 +561,34 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     if (!group) return;
 
     // Cooldown: skip duplicate "message sent" from the same task's interactive handler.
-    // Each input/ path task fires 2-3 "message sent" events (IPC + Telegram from IPC watcher,
-    // then Telegram from interactive handler). Only the first should consume a session.
     const cooldownUntil = groupEndCooldown.get(group);
     if (cooldownUntil && Date.now() < cooldownUntil) {
       console.log(`[watcher] SKIP (cooldown) ${message} group=${group}`);
       return;
     }
 
-    // Try tracked active run first
-    const containerName = lastContainerByGroup.get(group);
-    const run = containerName ? activeRuns.get(containerName) : undefined;
+    // Mark this group as having an active query (enables IPC capture)
+    pendingQueryGroups.add(group);
+    console.log(`[watcher] MESSAGE_SENT ${message} group=${group}`);
+    return;
+  }
 
-    if (run && !run.completedEarly) {
-      // Determine the MC session key — either from the run itself (task path)
-      // or from missionSessionByGroup (input/ path where the run was started
-      // by a Telegram message, not an MC-triggered task)
-      const mcSession = run.sessionKey.startsWith("mission:")
-        ? run.sessionKey
-        : peekMcSession(group) ?? null;
+  // --- Agent query completed → definitive end signal ---
+  // NanoClaw logs this when the agent-runner finishes a query (null-result
+  // OUTPUT_MARKER). This is the real "turn done" signal — finalize immediately.
+  if (message === "Agent query completed") {
+    const group = kv["group"];
+    if (!group) return;
 
-      if (mcSession) {
-        run.completedEarly = true;
-        // Consume from queue (no-op if already consumed at Spawning time)
-        if (!run.sessionKey.startsWith("mission:")) shiftMcSession(group);
-
-        // Get captured response BEFORE sendResponseComment consumes it
-        if (!capturedResponseByGroup.has(group) && run.response) {
-          capturedResponseByGroup.set(group, run.response);
-        }
-        const capturedResponse = capturedResponseByGroup.get(group) ?? null;
-        sendResponseComment(group, run.runId, mcSession);
-
-        // Detect new/modified files and send document events
-        const snapshot = mcFileSnapshots.get(mcSession) ?? null;
-        mcFileSnapshots.delete(mcSession);
-        sendDocumentEvents(group, run.runId, mcSession, snapshot);
-
-        // Delayed recheck with same snapshot — catches files created after send_message
-        if (snapshot) {
-          const _g = group, _r = run.runId, _s = mcSession, _snap = snapshot;
-          setTimeout(() => sendDocumentEvents(_g, _r, _s, _snap), 5000);
-        }
-
-        // Use captured IPC response (preferred) or run.response for review routing
-        let response = capturedResponse ?? run.response ?? null;
-        if (response && response.length > 1000) {
-          response = response.slice(0, 1000) + "...";
-        }
-
-        void postEvent({
-          runId: run.runId,
-          action: "end",
-          sessionKey: mcSession,
-          agentId: getGroupName(run.group),
-          timestamp: new Date().toISOString(),
-          response,
-          eventType: "lifecycle:end",
-        });
-
-        groupEndCooldown.set(group, Date.now() + 3000);
-        console.log(`[watcher] EARLY_END ${containerName} session=${mcSession} (output delivered)`);
-        return;
-      }
-    }
-
-    // Fallback: watcher missed the container spawn (e.g. restart mid-run).
-    // Check missionSessionByGroup first, then fall back to SQLite active tasks.
-    const pendingSession = shiftMcSession(group);
-    if (pendingSession) {
-      const syntheticRunId = `orphan-${Date.now()}`;
-
-      // Get captured response BEFORE sendResponseComment consumes it
-      const capturedResponse = capturedResponseByGroup.get(group) ?? null;
-
-      // Send captured response text as a comment
-      sendResponseComment(group, syntheticRunId, pendingSession);
-
-      // Detect new/modified files and send document events
-      const snapshot = mcFileSnapshots.get(pendingSession) ?? null;
-      mcFileSnapshots.delete(pendingSession);
-      sendDocumentEvents(group, syntheticRunId, pendingSession, snapshot);
-
-      // Delayed recheck with same snapshot — catches files created after send_message
-      if (snapshot) {
-        const _g = group, _r = syntheticRunId, _s = pendingSession, _snap = snapshot;
-        setTimeout(() => sendDocumentEvents(_g, _r, _s, _snap), 5000);
-      }
-
-      // Include response in end event so Convex can route to review
-      let response = capturedResponse;
-      if (response && response.length > 1000) response = response.slice(0, 1000) + "...";
-
-      void postEvent({
-        runId: syntheticRunId,
-        action: "end",
-        sessionKey: pendingSession,
-        agentId: getGroupName(group),
-        timestamp: new Date().toISOString(),
-        response,
-        eventType: "lifecycle:end",
-      });
-      groupEndCooldown.set(group, Date.now() + 3000);
-      console.log(`[watcher] ORPHAN_END session=${pendingSession} (from mc-mappings, no tracked run)`);
+    if (!pendingQueryGroups.has(group) && !hasMcSession(group)) {
+      // Not an MC-triggered query, ignore
+      console.log(`[watcher] QUERY_DONE (no MC session) group=${group}`);
       return;
     }
 
-    try {
-      const result = execSync(
-        `sqlite3 "${NANOCLAW_DB}" "SELECT id, prompt FROM scheduled_tasks WHERE status='active' ORDER BY created_at DESC LIMIT 1;"`,
-        { encoding: "utf-8", timeout: 2000 },
-      ).trim();
-      if (result) {
-        const [, prompt] = result.split("|");
-        const match = prompt?.match(/\[mc:session=(mission:[^\]]+)\]/);
-        if (match) {
-          const syntheticRunId = `orphan-${Date.now()}`;
-
-          // Get captured response BEFORE sendResponseComment consumes it
-          const capturedResponse2 = capturedResponseByGroup.get(group) ?? null;
-
-          // Send captured response and documents
-          sendResponseComment(group, syntheticRunId, match[1]);
-          const snapshot2 = mcFileSnapshots.get(match[1]) ?? null;
-          mcFileSnapshots.delete(match[1]);
-          sendDocumentEvents(group, syntheticRunId, match[1], snapshot2);
-          if (snapshot2) {
-            const _snap2 = snapshot2;
-            setTimeout(() => sendDocumentEvents(group, syntheticRunId, match[1], _snap2), 5000);
-          }
-
-          let response2 = capturedResponse2;
-          if (response2 && response2.length > 1000) response2 = response2.slice(0, 1000) + "...";
-
-          void postEvent({
-            runId: syntheticRunId,
-            action: "end",
-            sessionKey: match[1],
-            agentId: getGroupName(group),
-            timestamp: new Date().toISOString(),
-            response: response2,
-            eventType: "lifecycle:end",
-          });
-          groupEndCooldown.set(group, Date.now() + 3000);
-          console.log(`[watcher] ORPHAN_END session=${match[1]} (output delivered, no tracked run)`);
-        }
-      }
-    } catch { /* SQLite read failed, skip */ }
+    pendingQueryGroups.delete(group);
+    console.log(`[watcher] QUERY_DONE group=${group}`);
+    finalizeGroupEnd(group);
     return;
   }
 
@@ -718,10 +733,12 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     // Check for MC session key in the task's prompt
     const mcSession = findMcSession(taskId);
     if (mcSession) {
-      // missionSessionByGroup is already set by watchMcMappings (which fires
-      // earlier via .mc-mappings/ directory). Set it here too as a fallback
-      // in case the mapping was missed or processed after the task started.
-      pushMcSession(groupFolder, mcSession);
+      // watchMcMappings usually pushes this session first (via .mc-mappings/).
+      // Only push here as a fallback if it's NOT already in the queue —
+      // duplicate pushes leave stale sessions that steal slots from future tasks.
+      const queue = missionSessionQueues.get(groupFolder);
+      const alreadyQueued = queue?.includes(mcSession) ?? false;
+      if (!alreadyQueued) pushMcSession(groupFolder, mcSession);
       deferredMcTasks.set(taskId, {
         sessionKey: mcSession,
         group: groupFolder,
@@ -968,13 +985,20 @@ function tailLog(): void {
     readNewData();
   });
 
+  // Polling fallback — fs.watch on macOS can silently miss events
+  const pollInterval = setInterval(() => {
+    readNewData();
+  }, POLL_INTERVAL_MS);
+
   process.on("SIGINT", () => {
     watcher.close();
+    clearInterval(pollInterval);
     flushPending();
     process.exit(0);
   });
   process.on("SIGTERM", () => {
     watcher.close();
+    clearInterval(pollInterval);
     flushPending();
     process.exit(0);
   });
@@ -1138,6 +1162,19 @@ const seenMappingFiles = new Set<string>();
  */
 function watchMcMappings(): void {
   fs.mkdirSync(MC_MAPPINGS_DIR, { recursive: true });
+
+  // Purge stale mapping files left over from a previous watcher instance.
+  // These would poison the session queue with already-consumed sessions.
+  try {
+    const stale = fs.readdirSync(MC_MAPPINGS_DIR).filter(f => f.endsWith(".json"));
+    for (const file of stale) {
+      seenMappingFiles.add(file);
+      try { fs.unlinkSync(path.join(MC_MAPPINGS_DIR, file)); } catch { /* ignore */ }
+    }
+    if (stale.length > 0) {
+      console.log(`[watcher] Purged ${stale.length} stale MC mapping(s) from previous run`);
+    }
+  } catch { /* ignore */ }
 
   const scan = () => {
     try {
