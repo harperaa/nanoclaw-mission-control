@@ -5,6 +5,15 @@ const SYSTEM_AGENT_NAME = "NanoClaw";
 // Tools that reliably indicate coding work (write excluded — it's used for markdown/docs too)
 const CODING_TOOLS = ["edit", "bash", "run", "process"];
 
+// Border colors matching the UI tag colors
+const SOURCE_BORDER_COLORS: Record<string, string> = {
+	telegram: "#3b82f6",      // blue-500
+	whatsapp: "#22c55e",      // green-500
+	"mission-control": "#a855f7", // purple-500
+	webui: "#f59e0b",         // amber-500
+	scheduled: "#6b7280",     // gray-500
+};
+
 function formatDuration(ms: number): string {
 	const seconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(seconds / 60);
@@ -100,18 +109,32 @@ export const receiveAgentEvent = mutation({
 			}
 
 			if (!task) {
-				const title = summarizePrompt(args.prompt!);
+				const source = args.source ?? undefined;
+				let title = summarizePrompt(args.prompt!);
 				const description = args.prompt!;
+
+				// Prepend channel name for non-MC tasks
+				if (source && source !== "mission-control") {
+					const channelLabel = source.charAt(0).toUpperCase() + source.slice(1);
+					title = `[${channelLabel}] ${title}`;
+				}
+
+				const tags = ["nanoclaw"];
+				if (source) tags.push(source);
+
+				const borderColor = source ? SOURCE_BORDER_COLORS[source] : undefined;
 
 				const taskId = await ctx.db.insert("tasks", {
 					title,
 					description,
 					status: "in_progress",
 					assigneeIds: agent ? [agent._id] : [],
-					tags: ["nanoclaw"],
+					tags,
+					borderColor,
 					sessionKey: args.sessionKey ?? undefined,
 					runId: args.runId,
 					startedAt: now,
+					source,
 				});
 
 				if (agent) {
@@ -139,7 +162,15 @@ export const receiveAgentEvent = mutation({
 				});
 			} else {
 				// Update start time for existing task and reset coding tools flag
-				await ctx.db.patch(task._id, { startedAt: now, usedCodingTools: false });
+				const source = args.source ?? undefined;
+				const borderColor = source ? SOURCE_BORDER_COLORS[source] : undefined;
+				const patch: Record<string, unknown> = { startedAt: now, usedCodingTools: false };
+				if (source) patch.source = source;
+				if (borderColor) patch.borderColor = borderColor;
+				if (source && !task.tags.includes(source)) {
+					patch.tags = [...task.tags, source];
+				}
+				await ctx.db.patch(task._id, patch);
 			}
 		} else if (args.action === "progress" && task && agent) {
 			await ctx.db.insert("messages", {

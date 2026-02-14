@@ -317,7 +317,21 @@ function parseKeyValue(raw: string): { key: string; value: string } | null {
 function detectSource(jid: string): string | null {
   if (jid.startsWith("tg:")) return "telegram";
   if (jid.includes("@s.whatsapp.net") || jid.includes("@g.us")) return "whatsapp";
+  if (jid === "web@chat") return "webui";
   return null;
+}
+
+// Pending prompts captured from "Processing messages" log, keyed by group
+const pendingPromptByGroup = new Map<string, string>();
+
+// File snapshots for non-MC runs, keyed by containerName
+const runFileSnapshots = new Map<string, Map<string, number>>();
+
+function hasActiveRun(group: string): boolean {
+  for (const [, run] of activeRuns) {
+    if (run.group === group && !run.completedEarly) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +389,44 @@ function finalizeGroupEnd(group: string): void {
 
       groupEndCooldown.set(group, Date.now() + 3000);
       console.log(`[watcher] EARLY_END ${containerName} session=${mcSession} (query completed)`);
+      return;
+    }
+
+    // Non-MC run (telegram, whatsapp, webui) — finalize directly
+    if (run.sessionKey.startsWith("nanoclaw:")) {
+      run.completedEarly = true;
+
+      if (!capturedResponseByGroup.has(group) && run.response) {
+        capturedResponseByGroup.set(group, run.response);
+      }
+      sendResponseComment(group, run.runId, run.sessionKey);
+
+      const snapshot = runFileSnapshots.get(containerName!) ?? null;
+      runFileSnapshots.delete(containerName!);
+      sendDocumentEvents(group, run.runId, run.sessionKey, snapshot);
+      if (snapshot) {
+        const _g = group, _r = run.runId, _s = run.sessionKey, _snap = snapshot;
+        setTimeout(() => sendDocumentEvents(_g, _r, _s, _snap), 5000);
+      }
+
+      let response = capturedResponseByGroup.get(group) ?? run.response ?? null;
+      capturedResponseByGroup.delete(group);
+      if (response && response.length > 1000) {
+        response = response.slice(0, 1000) + "...";
+      }
+
+      void postEvent({
+        runId: run.runId,
+        action: "end",
+        sessionKey: run.sessionKey,
+        agentId: getGroupName(run.group),
+        timestamp: new Date().toISOString(),
+        response,
+        eventType: "lifecycle:end",
+      });
+
+      groupEndCooldown.set(group, Date.now() + 3000);
+      console.log(`[watcher] EARLY_END ${containerName} session=${run.sessionKey} source=${run.source ?? "unknown"} (query completed)`);
       return;
     }
   }
@@ -469,6 +521,17 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
 
   const { message } = parsed;
 
+  // --- Processing messages → capture prompt for upcoming container ---
+  if (message === "Processing messages") {
+    const group = kv["group"];
+    const prompt = kv["prompt"];
+    if (group && prompt) {
+      pendingPromptByGroup.set(group, prompt);
+      console.log(`[watcher] PROMPT_CAPTURE group=${group} len=${prompt.length}`);
+    }
+    return;
+  }
+
   // --- Spawning container agent → start event ---
   if (message === "Spawning container agent") {
     const group = kv["group"];
@@ -487,12 +550,22 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     }
 
     const mcSession = peekMcSession(group);
-    let source: string | null = null;
+    const chatJid = kv["chatJid"];
+    let source: string | null = chatJid ? detectSource(chatJid) : null;
     const sessionKey = mcSession ?? `nanoclaw:${group}`;
 
     if (mcSession) {
       source = "mission-control";
       shiftMcSession(group);
+    }
+
+    // Capture prompt: prefer "Processing messages" capture, fall back to spawn log KV
+    const prompt = pendingPromptByGroup.get(group) ?? kv["prompt"] ?? undefined;
+    pendingPromptByGroup.delete(group);
+
+    // Take file snapshot for all runs (not just MC)
+    if (!mcSession) {
+      runFileSnapshots.set(containerName, snapshotGroupDir(group));
     }
 
     const run: RunState = {
@@ -501,6 +574,7 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
       startTime: Date.now(),
       sessionKey,
       source: source ?? undefined,
+      prompt,
     };
     activeRuns.set(containerName, run);
 
@@ -511,10 +585,11 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
       agentId: getGroupName(group),
       timestamp: new Date().toISOString(),
       source,
+      prompt: prompt ?? null,
       eventType: "lifecycle:start",
     });
 
-    console.log(`[watcher] START ${containerName} group=${group} session=${sessionKey}`);
+    console.log(`[watcher] START ${containerName} group=${group} session=${sessionKey} source=${source ?? "unknown"}`);
     return;
   }
 
@@ -551,7 +626,7 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     }
     if (!group) {
       for (const [, r] of activeRuns) {
-        if (r.sessionKey.startsWith("mission:") && !r.completedEarly) {
+        if (!r.completedEarly) {
           group = r.group;
           break;
         }
@@ -580,9 +655,9 @@ function handleLogBlock(mainLine: string, kvLines: string[]): void {
     const group = kv["group"];
     if (!group) return;
 
-    if (!pendingQueryGroups.has(group) && !hasMcSession(group)) {
-      // Not an MC-triggered query, ignore
-      console.log(`[watcher] QUERY_DONE (no MC session) group=${group}`);
+    if (!pendingQueryGroups.has(group) && !hasMcSession(group) && !hasActiveRun(group)) {
+      // No tracked activity for this group, ignore
+      console.log(`[watcher] QUERY_DONE (no tracked session) group=${group}`);
       return;
     }
 
@@ -1036,8 +1111,8 @@ function watchIpcMessages(): void {
           const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
           if (data.type === "message" && data.text && typeof data.text === "string") {
             const group = data.groupFolder ?? "main";
-            // Only capture if we have an active MC session for this group
-            if (hasMcSession(group)) {
+            // Capture if we have an active MC session or any active run for this group
+            if (hasMcSession(group) || hasActiveRun(group)) {
               // Append to captured response (agent may call send_message multiple times)
               const existing = capturedResponseByGroup.get(group);
               capturedResponseByGroup.set(group, existing ? existing + "\n\n" + data.text : data.text);

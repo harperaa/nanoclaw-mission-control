@@ -137,14 +137,24 @@ const TaskCard: React.FC<TaskCardProps> = ({
 				)}
 			</div>
 			<div className="flex flex-wrap gap-1.5">
-				{task.tags.map((tag) => (
-					<span
-						key={tag}
-						className="text-[10px] px-2 py-0.5 bg-muted rounded font-medium text-muted-foreground"
-					>
-						{tag}
-					</span>
-				))}
+				{task.tags.map((tag) => {
+					const sourceStyles: Record<string, string> = {
+						telegram: "bg-blue-100 text-blue-700",
+						whatsapp: "bg-green-100 text-green-700",
+						"mission-control": "bg-purple-100 text-purple-700",
+						webui: "bg-amber-100 text-amber-700",
+						scheduled: "bg-gray-100 text-gray-600",
+					};
+					const style = sourceStyles[tag] ?? "bg-muted text-muted-foreground";
+					return (
+						<span
+							key={tag}
+							className={`text-[10px] px-2 py-0.5 rounded font-medium ${style}`}
+						>
+							{tag}
+						</span>
+					);
+				})}
 			</div>
 		</div>
 	);

@@ -38,6 +38,7 @@ export default defineSchema({
 		runId: v.optional(v.string()),
 		startedAt: v.optional(v.number()),
 		usedCodingTools: v.optional(v.boolean()),
+		source: v.optional(v.string()),
 	}),
 	messages: defineTable({
 		taskId: v.id("tasks"),
